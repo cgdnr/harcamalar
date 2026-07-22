@@ -1,0 +1,1373 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Harcamalarım</title>
+<meta name="theme-color" content="#EFF6F9" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #D3E4EC; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// window.storage -> localStorage tabanlı yerel depolama katmanı
+// (orijinal uygulama Claude Artifacts'in bulut depolamasını kullanıyordu;
+//  APK/PWA sürümünde veriler telefonun kendi localStorage'ında tutulur)
+// ---------------------------------------------------------------------------
+window.storage = {
+  async get(key, shared) {
+    var k = (shared ? "shared:" : "user:") + key;
+    if (!(k in window.localStorage)) throw new Error("key not found");
+    return { key: key, value: window.localStorage.getItem(k), shared: !!shared };
+  },
+  async set(key, value, shared) {
+    var k = (shared ? "shared:" : "user:") + key;
+    window.localStorage.setItem(k, value);
+    return { key: key, value: value, shared: !!shared };
+  },
+  async delete(key, shared) {
+    var k = (shared ? "shared:" : "user:") + key;
+    var existed = k in window.localStorage;
+    window.localStorage.removeItem(k);
+    return { key: key, deleted: existed, shared: !!shared };
+  },
+  async list(prefix, shared) {
+    var base = shared ? "shared:" : "user:";
+    var p = base + (prefix || "");
+    var keys = Object.keys(window.localStorage)
+      .filter(function (k) { return k.indexOf(p) === 0; })
+      .map(function (k) { return k.slice(base.length); });
+    return { keys: keys, prefix: prefix, shared: !!shared };
+  },
+};
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("sw.js").catch(function () {});
+  });
+}
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+// -------------------------------------------------------------------------
+// lucide-react ikonlarının yerine Font Awesome tabanlı küçük bileşenler
+// -------------------------------------------------------------------------
+function makeIcon(faClass) {
+  return function IconComp(props) {
+    const size = props.size || 16;
+    const style = Object.assign({ fontSize: size, lineHeight: 1, display: "inline-block" }, props.style || {});
+    return React.createElement("i", { className: faClass, style: style, "aria-hidden": "true" });
+  };
+}
+
+const UtensilsCrossed = makeIcon("fa-solid fa-utensils");
+const Shirt = makeIcon("fa-solid fa-shirt");
+const Car = makeIcon("fa-solid fa-car");
+const Zap = makeIcon("fa-solid fa-bolt");
+const Clapperboard = makeIcon("fa-solid fa-clapperboard");
+const Tag = makeIcon("fa-solid fa-tag");
+const ChevronLeft = makeIcon("fa-solid fa-chevron-left");
+const ChevronRight = makeIcon("fa-solid fa-chevron-right");
+const Plus = makeIcon("fa-solid fa-plus");
+const X = makeIcon("fa-solid fa-xmark");
+const Trash2 = makeIcon("fa-solid fa-trash");
+const CalendarDays = makeIcon("fa-solid fa-calendar-days");
+const BarChart3 = makeIcon("fa-solid fa-chart-column");
+
+// ---------------------------------------------------------------------------
+// Sabitler
+// ---------------------------------------------------------------------------
+
+const BASE_CATEGORIES = {
+  yemek: { label: "Yemek", color: "rgb(75, 156, 211)", Icon: UtensilsCrossed },
+  giyim: { label: "Giyim", color: "rgb(93, 138, 168)", Icon: Shirt },
+  ulasim: { label: "Ulaşım", color: "#2E6DA4", Icon: Car },
+  fatura: { label: "Fatura", color: "rgb(0, 79, 152)", Icon: Zap },
+  eglence: { label: "Eğlence", color: "#6C7EB0", Icon: Clapperboard },
+};
+
+// Kullanıcının eklediği yeni kategorilere sırayla atanan, mavi ile uyumlu tonlar
+const CUSTOM_COLOR_ROTATION = ["#ADD8E6", "#7FB8D9", "#3D7EA6", "#89A9C4", "#4472A8", "#8FB9DE"];
+
+// Kategorisi silinmiş/eşleşmeyen eski kayıtlar için yedek görünüm
+const FALLBACK_CATEGORY = { label: "Diğer", color: "rgb(93, 138, 168)", Icon: Tag };
+
+const CATEGORY_KEYWORDS = {
+  yemek: [
+    "yemek", "market", "restoran", "lokanta", "kahve", "kafe", "cafe", "gıda",
+    "migros", "şok", "bim", "a101", "carrefour", "manav", "fırın", "büfe",
+    "çay", "tatlı", "kasap",
+  ],
+  giyim: [
+    "giyim", "kıyafet", "pantolon", "ayakkabı", "gömlek", "elbise", "ceket",
+    "çanta", "tişört", "mont", "mağaza",
+  ],
+  ulasim: [
+    "taksi", "otobüs", "metro", "benzin", "akbil", "uber", "yakıt", "otopark",
+    "dolmuş", "uçak", "bilet", "tren", "vapur",
+  ],
+  fatura: [
+    "fatura", "elektrik", "su", "doğalgaz", "internet", "telefon", "kira",
+    "aidat", "sigorta",
+  ],
+  eglence: [
+    "sinema", "tiyatro", "konser", "oyun", "netflix", "spotify", "bar",
+    "eğlence", "parti",
+  ],
+};
+
+const GUN_ADLARI = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
+const AY_ADLARI = [
+  "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+  "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık",
+];
+
+const STORAGE_KEY = "harcamalar";
+const CATEGORY_STORAGE_KEY = "ozel_kategoriler";
+
+// ---------------------------------------------------------------------------
+// Yardımcı fonksiyonlar
+// ---------------------------------------------------------------------------
+
+function fmtTL(n) {
+  return new Intl.NumberFormat("tr-TR", {
+    style: "currency",
+    currency: "TRY",
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
+function toKey(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function guessCategory(description) {
+  const text = (description || "").toLowerCase();
+  for (const [cat, words] of Object.entries(CATEGORY_KEYWORDS)) {
+    if (words.some((w) => text.includes(w))) return cat;
+  }
+  return null;
+}
+
+function buildMonthGrid(year, month) {
+  // month: 0-indexed
+  const first = new Date(year, month, 1);
+  const startOffset = (first.getDay() + 6) % 7; // Pazartesi = 0
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
+
+function uid() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Ana bileşen
+// ---------------------------------------------------------------------------
+
+function App() {
+  const today = new Date();
+  const [cursor, setCursor] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const [expenses, setExpenses] = useState([]);
+  const [customCategories, setCustomCategories] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [tab, setTab] = useState("takvim"); // 'takvim' | 'rapor'
+  const [selectedDay, setSelectedDay] = useState(null); // Date | null
+  const [selectedCategory, setSelectedCategory] = useState(null); // kategori anahtarı | null
+  const [saveError, setSaveError] = useState(false);
+
+  // ---- Depolamadan yükle ----
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [expRes, catRes] = await Promise.all([
+          window.storage.get(STORAGE_KEY, false).catch(() => null),
+          window.storage.get(CATEGORY_STORAGE_KEY, false).catch(() => null),
+        ]);
+        if (!cancelled && expRes && expRes.value) {
+          setExpenses(JSON.parse(expRes.value));
+        }
+        if (!cancelled && catRes && catRes.value) {
+          setCustomCategories(JSON.parse(catRes.value));
+        }
+      } catch (e) {
+        // kayıt yoksa veya hata varsa boş listeyle başla
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ---- Depolamaya kaydet ----
+  useEffect(() => {
+    if (!loaded) return;
+    (async () => {
+      try {
+        const result = await window.storage.set(STORAGE_KEY, JSON.stringify(expenses), false);
+        setSaveError(!result);
+      } catch (e) {
+        setSaveError(true);
+      }
+    })();
+  }, [expenses, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    (async () => {
+      try {
+        await window.storage.set(CATEGORY_STORAGE_KEY, JSON.stringify(customCategories), false);
+      } catch (e) {
+        setSaveError(true);
+      }
+    })();
+  }, [customCategories, loaded]);
+
+  const categories = useMemo(() => {
+    const map = { ...BASE_CATEGORIES };
+    for (const c of customCategories) {
+      map[c.key] = { label: c.label, color: c.color, Icon: Tag };
+    }
+    return map;
+  }, [customCategories]);
+
+  const addCategory = useCallback((label) => {
+    const trimmed = (label || "").trim();
+    if (!trimmed) return null;
+    const key = `custom-${uid()}`;
+    setCustomCategories((prev) => {
+      const color = CUSTOM_COLOR_ROTATION[prev.length % CUSTOM_COLOR_ROTATION.length];
+      return [...prev, { key, label: trimmed, color }];
+    });
+    return key;
+  }, []);
+
+  const addExpense = useCallback((entry) => {
+    setExpenses((prev) => [...prev, { id: uid(), ...entry }]);
+  }, []);
+
+  const deleteExpense = useCallback((id) => {
+    setExpenses((prev) => prev.filter((e) => e.id !== id));
+  }, []);
+
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+
+  const monthExpenses = useMemo(() => {
+    const prefix = `${year}-${String(month + 1).padStart(2, "0")}`;
+    return expenses.filter((e) => e.date.startsWith(prefix));
+  }, [expenses, year, month]);
+
+  const dayTotals = useMemo(() => {
+    const map = {};
+    for (const e of monthExpenses) {
+      map[e.date] = (map[e.date] || 0) + Number(e.amount);
+    }
+    return map;
+  }, [monthExpenses]);
+
+  const monthTotal = useMemo(
+    () => monthExpenses.reduce((sum, e) => sum + Number(e.amount), 0),
+    [monthExpenses]
+  );
+
+  const categoryTotals = useMemo(() => {
+    const map = {};
+    for (const key of Object.keys(categories)) map[key] = 0;
+    for (const e of monthExpenses) {
+      map[e.category] = (map[e.category] || 0) + Number(e.amount);
+    }
+    return map;
+  }, [monthExpenses, categories]);
+
+  function goMonth(delta) {
+    setCursor(new Date(year, month + delta, 1));
+  }
+
+  return (
+    <div style={styles.stage}>
+      <div style={styles.device}>
+        {/* Üst başlık */}
+        <header style={styles.header}>
+          <div>
+            <div style={styles.eyebrow}>Defter</div>
+            <h1 style={styles.title}>Harcamalarım</h1>
+          </div>
+          <div style={styles.headerRule} />
+        </header>
+
+        {/* İçerik */}
+        <main style={styles.main}>
+          {tab === "takvim" ? (
+            <TakvimSayfasi
+              year={year}
+              month={month}
+              onPrev={() => goMonth(-1)}
+              onNext={() => goMonth(1)}
+              dayTotals={dayTotals}
+              onSelectDay={(d) => setSelectedDay(d)}
+              todayKey={toKey(today)}
+            />
+          ) : (
+            <RaporSayfasi
+              year={year}
+              month={month}
+              onPrev={() => goMonth(-1)}
+              onNext={() => goMonth(1)}
+              monthTotal={monthTotal}
+              categoryTotals={categoryTotals}
+              categories={categories}
+              monthExpenses={monthExpenses}
+              onDelete={deleteExpense}
+              onSelectCategory={setSelectedCategory}
+            />
+          )}
+        </main>
+
+        {/* Alt sekme çubuğu */}
+        <nav style={styles.tabbar}>
+          <TabButon
+            aktif={tab === "takvim"}
+            onClick={() => setTab("takvim")}
+            Icon={CalendarDays}
+            label="Takvim"
+          />
+          <TabButon
+            aktif={tab === "rapor"}
+            onClick={() => setTab("rapor")}
+            Icon={BarChart3}
+            label="Rapor"
+          />
+        </nav>
+
+        {saveError && (
+          <div style={styles.saveWarning}>Kayıt edilemedi, bağlantıyı kontrol edin.</div>
+        )}
+
+        {selectedDay && (
+          <GunModali
+            date={selectedDay}
+            expenses={expenses.filter((e) => e.date === toKey(selectedDay))}
+            categories={categories}
+            onAddCategory={addCategory}
+            onClose={() => setSelectedDay(null)}
+            onAdd={addExpense}
+            onDelete={deleteExpense}
+          />
+        )}
+
+        {selectedCategory && (
+          <KategoriModali
+            category={categories[selectedCategory] || FALLBACK_CATEGORY}
+            expenses={monthExpenses
+              .filter((e) => e.category === selectedCategory)
+              .sort((a, b) => (a.date < b.date ? 1 : -1))}
+            total={categoryTotals[selectedCategory] || 0}
+            onClose={() => setSelectedCategory(null)}
+            onDelete={deleteExpense}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sekme butonu
+// ---------------------------------------------------------------------------
+
+function TabButon({ aktif, onClick, Icon, label }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        ...styles.tabButton,
+        color: aktif ? COLORS.ink : COLORS.faint,
+      }}
+    >
+      <Icon size={20} strokeWidth={aktif ? 2.4 : 1.8} />
+      <span style={{ fontWeight: aktif ? 700 : 500 }}>{label}</span>
+      {aktif && <div style={styles.tabIndicator} />}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Takvim sayfası
+// ---------------------------------------------------------------------------
+
+function TakvimSayfasi({ year, month, onPrev, onNext, dayTotals, onSelectDay, todayKey }) {
+  const cells = useMemo(() => buildMonthGrid(year, month), [year, month]);
+
+  return (
+    <div>
+      <AySeciciBar year={year} month={month} onPrev={onPrev} onNext={onNext} />
+
+      <div style={styles.weekRow}>
+        {GUN_ADLARI.map((g) => (
+          <div key={g} style={styles.weekLabel}>
+            {g}
+          </div>
+        ))}
+      </div>
+
+      <div style={styles.grid}>
+        {cells.map((date, i) => {
+          if (!date) return <div key={i} style={styles.emptyCell} />;
+          const key = toKey(date);
+          const total = dayTotals[key];
+          const isToday = key === todayKey;
+          return (
+            <button
+              key={i}
+              onClick={() => onSelectDay(date)}
+              style={{
+                ...styles.dayCell,
+                borderColor: isToday ? COLORS.accent : COLORS.rule,
+                background: total ? COLORS.paperRaised : "transparent",
+              }}
+            >
+              <span
+                style={{
+                  ...styles.dayNumber,
+                  color: isToday ? COLORS.accent : COLORS.ink,
+                }}
+              >
+                {date.getDate()}
+              </span>
+              {total ? (
+                <span style={styles.dayAmount}>
+                  {new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(total)}
+                </span>
+              ) : (
+                <span style={styles.dayPlus}>+</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <p style={styles.hint}>Bir güne dokunarak harcama ekleyin ya da düzenleyin.</p>
+    </div>
+  );
+}
+
+function AySeciciBar({ year, month, onPrev, onNext }) {
+  return (
+    <div style={styles.monthBar}>
+      <button onClick={onPrev} style={styles.arrowBtn} aria-label="Önceki ay">
+        <ChevronLeft size={20} />
+      </button>
+      <div style={styles.monthLabel}>
+        {AY_ADLARI[month]} <span style={styles.monthYear}>{year}</span>
+      </div>
+      <button onClick={onNext} style={styles.arrowBtn} aria-label="Sonraki ay">
+        <ChevronRight size={20} />
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Gün modalı — o güne ait harcamaları listele / ekle
+// ---------------------------------------------------------------------------
+
+function GunModali({ date, expenses, categories, onAddCategory, onClose, onAdd, onDelete }) {
+  const [amount, setAmount] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState(null);
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+
+  const suggested = guessCategory(description);
+  const activeCategory = category || suggested;
+  const canSubmit = Boolean(parseFloat(String(amount).replace(",", ".")) > 0 && activeCategory);
+
+  const dayTotal = expenses.reduce((s, e) => s + Number(e.amount), 0);
+
+  function handleSubmit() {
+    const value = parseFloat(String(amount).replace(",", "."));
+    if (!value || value <= 0 || !activeCategory) return;
+    onAdd({
+      date: toKey(date),
+      amount: value,
+      description: description.trim() || categories[activeCategory].label,
+      category: activeCategory,
+    });
+    setAmount("");
+    setDescription("");
+    setCategory(null);
+  }
+
+  function handleKeyDown(ev) {
+    if (ev.key === "Enter") handleSubmit();
+  }
+
+  function confirmNewCategory() {
+    const key = onAddCategory(newCatName);
+    if (key) {
+      setCategory(key);
+      setNewCatName("");
+      setAddingCategory(false);
+    }
+  }
+
+  function handleNewCatKeyDown(ev) {
+    if (ev.key === "Enter") confirmNewCategory();
+    if (ev.key === "Escape") {
+      setAddingCategory(false);
+      setNewCatName("");
+    }
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.sheet} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.sheetHandle} />
+        <div style={styles.sheetHeader}>
+          <div>
+            <div style={styles.eyebrow}>
+              {GUN_ADLARI[(date.getDay() + 6) % 7]}, {date.getDate()} {AY_ADLARI[date.getMonth()]}
+            </div>
+            {dayTotal > 0 && (
+              <div style={styles.sheetTotal}>{fmtTL(dayTotal)}</div>
+            )}
+          </div>
+          <button onClick={onClose} style={styles.closeBtn} aria-label="Kapat">
+            <X size={20} />
+          </button>
+        </div>
+
+        {expenses.length > 0 && (
+          <ul style={styles.expenseList}>
+            {expenses.map((e) => {
+              const cat = categories[e.category] || FALLBACK_CATEGORY;
+              const Icon = cat.Icon;
+              return (
+                <li key={e.id} style={styles.expenseRow}>
+                  <span style={{ ...styles.expenseIcon, background: cat.color + "22", color: cat.color }}>
+                    <Icon size={16} />
+                  </span>
+                  <span style={styles.expenseDesc}>{e.description}</span>
+                  <span style={styles.expenseAmount}>{fmtTL(e.amount)}</span>
+                  <button
+                    onClick={() => onDelete(e.id)}
+                    style={styles.deleteBtn}
+                    aria-label="Sil"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        <div style={styles.form}>
+          <div style={styles.formRow}>
+            <span style={styles.currencyPrefix}>₺</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="0,00"
+              value={amount}
+              onChange={(ev) => setAmount(ev.target.value)}
+              onKeyDown={handleKeyDown}
+              style={styles.amountInput}
+              autoFocus
+            />
+          </div>
+          <input
+            type="text"
+            placeholder="Açıklama (örn. akşam yemeği)"
+            value={description}
+            onChange={(ev) => setDescription(ev.target.value)}
+            onKeyDown={handleKeyDown}
+            style={styles.descInput}
+          />
+
+          <div style={styles.chipRow}>
+            {Object.entries(categories).map(([key, cat]) => {
+              const Icon = cat.Icon;
+              const active = key === activeCategory;
+              return (
+                <button
+                  type="button"
+                  key={key}
+                  onClick={() => setCategory(key)}
+                  style={{
+                    ...styles.chip,
+                    borderColor: active ? cat.color : COLORS.rule,
+                    background: active ? cat.color + "1c" : "transparent",
+                    color: active ? cat.color : COLORS.faint,
+                  }}
+                >
+                  <Icon size={13} />
+                  {cat.label}
+                </button>
+              );
+            })}
+            {!addingCategory && (
+              <button
+                type="button"
+                onClick={() => setAddingCategory(true)}
+                style={{ ...styles.chip, borderStyle: "dashed", borderColor: COLORS.rule, color: COLORS.faint }}
+              >
+                <Plus size={13} /> Yeni kategori
+              </button>
+            )}
+          </div>
+
+          {addingCategory && (
+            <div style={styles.newCatRow}>
+              <input
+                type="text"
+                placeholder="Kategori adı"
+                value={newCatName}
+                onChange={(ev) => setNewCatName(ev.target.value)}
+                onKeyDown={handleNewCatKeyDown}
+                style={styles.newCatInput}
+                autoFocus
+              />
+              <button type="button" onClick={confirmNewCategory} style={styles.newCatConfirm} aria-label="Kategoriyi ekle">
+                <Plus size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAddingCategory(false);
+                  setNewCatName("");
+                }}
+                style={styles.newCatCancel}
+                aria-label="Vazgeç"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            style={{ ...styles.submitBtn, opacity: canSubmit ? 1 : 0.45, cursor: canSubmit ? "pointer" : "not-allowed" }}
+          >
+            <Plus size={17} /> Ekle
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rapor sayfası
+// ---------------------------------------------------------------------------
+
+function RaporSayfasi({ year, month, onPrev, onNext, monthTotal, categoryTotals, categories, monthExpenses, onDelete, onSelectCategory }) {
+  const sorted = Object.entries(categoryTotals)
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1]);
+
+  const maxVal = sorted.length ? sorted[0][1] : 1;
+
+  const sortedExpenses = [...monthExpenses].sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  return (
+    <div>
+      <AySeciciBar year={year} month={month} onPrev={onPrev} onNext={onNext} />
+
+      <div style={styles.totalBlock}>
+        <div style={styles.totalLabel}>Toplam harcama</div>
+        <div style={styles.totalValue}>{fmtTL(monthTotal)}</div>
+        <div style={styles.totalUnderline} />
+      </div>
+
+      {sorted.length === 0 ? (
+        <p style={styles.hint}>Bu ay için henüz harcama girilmedi.</p>
+      ) : (
+        <>
+          <div style={styles.sectionLabel}>Kategoriye göre</div>
+          <div style={styles.barList}>
+            {sorted.map(([key, val]) => {
+              const cat = categories[key] || FALLBACK_CATEGORY;
+              const Icon = cat.Icon;
+              const pct = monthTotal ? (val / monthTotal) * 100 : 0;
+              const widthPct = (val / maxVal) * 100;
+              return (
+                <button
+                  type="button"
+                  key={key}
+                  onClick={() => onSelectCategory(key)}
+                  style={styles.barRow}
+                >
+                  <span style={{ ...styles.expenseIcon, background: cat.color + "22", color: cat.color }}>
+                    <Icon size={16} />
+                  </span>
+                  <div style={styles.barMain}>
+                    <div style={styles.barTopLine}>
+                      <span style={styles.barLabel}>{cat.label}</span>
+                      <span style={styles.barAmount}>{fmtTL(val)}</span>
+                    </div>
+                    <div style={styles.barTrack}>
+                      <div
+                        style={{
+                          ...styles.barFill,
+                          width: `${widthPct}%`,
+                          background: cat.color,
+                        }}
+                      />
+                    </div>
+                    <div style={styles.barPct}>%{pct.toFixed(0)}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div style={styles.sectionLabel}>İşlemler ({sortedExpenses.length})</div>
+          <ul style={styles.expenseList}>
+            {sortedExpenses.map((e) => {
+              const cat = categories[e.category] || FALLBACK_CATEGORY;
+              const Icon = cat.Icon;
+              const d = new Date(e.date + "T00:00:00");
+              return (
+                <li key={e.id} style={styles.expenseRow}>
+                  <span style={{ ...styles.expenseIcon, background: cat.color + "22", color: cat.color }}>
+                    <Icon size={16} />
+                  </span>
+                  <div style={styles.txMain}>
+                    <span style={styles.expenseDesc}>{e.description}</span>
+                    <span style={styles.txDate}>
+                      {d.getDate()} {AY_ADLARI[d.getMonth()].slice(0, 3)}
+                    </span>
+                  </div>
+                  <span style={styles.expenseAmount}>{fmtTL(e.amount)}</span>
+                  <button onClick={() => onDelete(e.id)} style={styles.deleteBtn} aria-label="Sil">
+                    <Trash2 size={15} />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Kategori detay modalı — bir kategoriye ait aylık harcamaları listeler
+// ---------------------------------------------------------------------------
+
+function KategoriModali({ category, expenses, total, onClose, onDelete }) {
+  const Icon = category.Icon;
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.sheet} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.sheetHandle} />
+        <div style={styles.sheetHeader}>
+          <div>
+            <div style={styles.eyebrow}>
+              <span style={{ ...styles.catBadge, background: category.color + "22", color: category.color }}>
+                <Icon size={13} /> {category.label}
+              </span>
+            </div>
+            <div style={styles.sheetTotal}>{fmtTL(total)}</div>
+          </div>
+          <button onClick={onClose} style={styles.closeBtn} aria-label="Kapat">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div style={styles.sheetScrollArea}>
+          {expenses.length === 0 ? (
+            <p style={styles.hint}>Bu kategoride henüz harcama yok.</p>
+          ) : (
+            <ul style={styles.expenseList}>
+              {expenses.map((e) => {
+                const d = new Date(e.date + "T00:00:00");
+                return (
+                  <li key={e.id} style={styles.expenseRow}>
+                    <div style={styles.txMain}>
+                      <span style={styles.expenseDesc}>{e.description}</span>
+                      <span style={styles.txDate}>
+                        {d.getDate()} {AY_ADLARI[d.getMonth()]}
+                      </span>
+                    </div>
+                    <span style={styles.expenseAmount}>{fmtTL(e.amount)}</span>
+                    <button onClick={() => onDelete(e.id)} style={styles.deleteBtn} aria-label="Sil">
+                      <Trash2 size={15} />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Stil / tasarım sistemi
+// ---------------------------------------------------------------------------
+
+const COLORS = {
+  paper: "#EFF6F9",
+  paperRaised: "#D6EAF2",
+  ink: "rgb(0, 79, 152)",
+  faint: "rgb(93, 138, 168)",
+  rule: "rgb(173, 216, 230)",
+  accent: "rgb(75, 156, 211)",
+};
+
+const serif = "'Iowan Old Style', 'Palatino Linotype', Georgia, ui-serif, serif";
+const mono = "ui-monospace, 'SF Mono', 'Roboto Mono', Menlo, Consolas, monospace";
+const sans = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif";
+
+const styles = {
+  stage: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#D3E4EC",
+    padding: "24px 12px",
+    fontFamily: sans,
+    boxSizing: "border-box",
+  },
+  device: {
+    width: "100%",
+    maxWidth: 400,
+    height: 760,
+    maxHeight: "92vh",
+    background: COLORS.paper,
+    borderRadius: 28,
+    boxShadow: "0 30px 60px -20px rgba(34,48,60,0.35), 0 0 0 1px rgba(34,48,60,0.06)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+    position: "relative",
+  },
+  header: {
+    padding: "22px 22px 0",
+    flexShrink: 0,
+  },
+  eyebrow: {
+    fontFamily: mono,
+    fontSize: 11,
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: COLORS.faint,
+    marginBottom: 2,
+  },
+  title: {
+    fontFamily: serif,
+    fontSize: 26,
+    fontWeight: 600,
+    color: COLORS.ink,
+    margin: "0 0 14px",
+    letterSpacing: "-0.01em",
+  },
+  headerRule: {
+    height: 1,
+    background: COLORS.rule,
+  },
+  main: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "16px 20px 8px",
+    WebkitOverflowScrolling: "touch",
+  },
+  tabbar: {
+    flexShrink: 0,
+    display: "flex",
+    borderTop: `1px solid ${COLORS.rule}`,
+    background: COLORS.paper,
+  },
+  tabButton: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 3,
+    padding: "10px 0 12px",
+    background: "none",
+    border: "none",
+    fontFamily: sans,
+    fontSize: 11.5,
+    cursor: "pointer",
+    position: "relative",
+  },
+  tabIndicator: {
+    position: "absolute",
+    top: 0,
+    width: 28,
+    height: 2,
+    background: COLORS.accent,
+    borderRadius: 2,
+  },
+  saveWarning: {
+    position: "absolute",
+    bottom: 62,
+    left: 16,
+    right: 16,
+    background: "#1E3A5F",
+    color: "#EAF3FA",
+    fontSize: 11.5,
+    padding: "6px 10px",
+    borderRadius: 8,
+    textAlign: "center",
+  },
+
+  // Ay seçici
+  monthBar: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 14,
+  },
+  monthLabel: {
+    fontFamily: serif,
+    fontSize: 18,
+    fontWeight: 600,
+    color: COLORS.ink,
+  },
+  monthYear: {
+    color: COLORS.faint,
+    fontWeight: 400,
+  },
+  arrowBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: "50%",
+    border: `1px solid ${COLORS.rule}`,
+    background: "transparent",
+    color: COLORS.ink,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+  },
+
+  // Takvim ızgarası
+  weekRow: {
+    display: "grid",
+    gridTemplateColumns: "repeat(7, 1fr)",
+    marginBottom: 6,
+  },
+  weekLabel: {
+    textAlign: "center",
+    fontFamily: mono,
+    fontSize: 10.5,
+    color: COLORS.faint,
+    letterSpacing: "0.04em",
+  },
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(7, 1fr)",
+    gap: 4,
+  },
+  emptyCell: { minHeight: 52 },
+  dayCell: {
+    minHeight: 52,
+    borderRadius: 10,
+    border: `1px solid ${COLORS.rule}`,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 2,
+    background: "transparent",
+    cursor: "pointer",
+    padding: "4px 2px",
+  },
+  dayNumber: {
+    fontFamily: serif,
+    fontSize: 14,
+    fontWeight: 600,
+  },
+  dayAmount: {
+    fontFamily: mono,
+    fontSize: 9.5,
+    color: COLORS.accent,
+    fontWeight: 600,
+  },
+  dayPlus: {
+    fontSize: 11,
+    color: "rgb(173, 216, 230)",
+  },
+  hint: {
+    fontFamily: sans,
+    fontSize: 12.5,
+    color: COLORS.faint,
+    textAlign: "center",
+    marginTop: 18,
+  },
+
+  // Modal / sheet
+  overlay: {
+    position: "absolute",
+    inset: 0,
+    background: "rgba(34,48,60,0.45)",
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "center",
+    zIndex: 50,
+  },
+  sheet: {
+    width: "100%",
+    maxWidth: 400,
+    maxHeight: "85vh",
+    background: COLORS.paper,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: "10px 20px 22px",
+    boxShadow: "0 -10px 40px rgba(0,0,0,0.25)",
+    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+  },
+  sheetHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    background: COLORS.rule,
+    alignSelf: "center",
+    marginBottom: 14,
+  },
+  sheetHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 10,
+  },
+  sheetTotal: {
+    fontFamily: mono,
+    fontSize: 20,
+    fontWeight: 700,
+    color: COLORS.ink,
+  },
+  sheetScrollArea: {
+    overflowY: "auto",
+    maxHeight: "55vh",
+    flex: 1,
+    minHeight: 0,
+  },
+  catBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    padding: "4px 10px",
+    borderRadius: 20,
+    fontSize: 12,
+    fontWeight: 700,
+    textTransform: "none",
+    letterSpacing: 0,
+    marginBottom: 6,
+  },
+  closeBtn: {
+    border: "none",
+    background: "transparent",
+    color: COLORS.faint,
+    cursor: "pointer",
+    padding: 4,
+  },
+
+  expenseList: {
+    listStyle: "none",
+    margin: "6px 0 16px",
+    padding: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+  },
+  expenseRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "9px 2px",
+    borderBottom: `1px solid ${COLORS.rule}`,
+  },
+  expenseIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  expenseDesc: {
+    fontFamily: sans,
+    fontSize: 13.5,
+    color: COLORS.ink,
+    flex: 1,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  txMain: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    minWidth: 0,
+  },
+  txDate: {
+    fontFamily: mono,
+    fontSize: 10.5,
+    color: COLORS.faint,
+  },
+  expenseAmount: {
+    fontFamily: mono,
+    fontSize: 13.5,
+    fontWeight: 600,
+    color: COLORS.ink,
+    whiteSpace: "nowrap",
+  },
+  deleteBtn: {
+    border: "none",
+    background: "transparent",
+    color: "#9FC0D3",
+    cursor: "pointer",
+    padding: 4,
+    flexShrink: 0,
+  },
+
+  form: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    paddingTop: 6,
+    borderTop: `1px dashed ${COLORS.rule}`,
+  },
+  formRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    borderBottom: `1px solid ${COLORS.ink}`,
+    paddingBottom: 6,
+    marginTop: 10,
+  },
+  currencyPrefix: {
+    fontFamily: mono,
+    fontSize: 20,
+    color: COLORS.faint,
+  },
+  amountInput: {
+    flex: 1,
+    border: "none",
+    background: "transparent",
+    outline: "none",
+    fontFamily: mono,
+    fontSize: 22,
+    fontWeight: 700,
+    color: COLORS.ink,
+  },
+  descInput: {
+    border: "none",
+    borderBottom: `1px solid ${COLORS.rule}`,
+    background: "transparent",
+    outline: "none",
+    fontFamily: sans,
+    fontSize: 13.5,
+    color: COLORS.ink,
+    padding: "6px 2px",
+  },
+  chipRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 2,
+  },
+  chip: {
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    padding: "6px 10px",
+    borderRadius: 20,
+    border: "1px solid",
+    fontSize: 12,
+    fontFamily: sans,
+    fontWeight: 600,
+    background: "transparent",
+    cursor: "pointer",
+  },
+  newCatRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 2,
+  },
+  newCatInput: {
+    flex: 1,
+    border: `1px solid ${COLORS.rule}`,
+    borderRadius: 10,
+    background: COLORS.paperRaised,
+    outline: "none",
+    fontFamily: sans,
+    fontSize: 13,
+    color: COLORS.ink,
+    padding: "8px 10px",
+  },
+  newCatConfirm: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    border: "none",
+    background: COLORS.ink,
+    color: COLORS.paper,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  newCatCancel: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    border: `1px solid ${COLORS.rule}`,
+    background: "transparent",
+    color: COLORS.faint,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  submitBtn: {
+    marginTop: 8,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    background: COLORS.ink,
+    color: COLORS.paper,
+    border: "none",
+    borderRadius: 12,
+    padding: "12px 0",
+    fontFamily: sans,
+    fontSize: 14,
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+
+  // Rapor
+  totalBlock: {
+    marginBottom: 22,
+  },
+  totalLabel: {
+    fontFamily: mono,
+    fontSize: 11,
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: COLORS.faint,
+    marginBottom: 4,
+  },
+  totalValue: {
+    fontFamily: mono,
+    fontSize: 34,
+    fontWeight: 700,
+    color: COLORS.ink,
+    display: "inline-block",
+    paddingBottom: 6,
+  },
+  totalUnderline: {
+    height: 0,
+    borderBottom: `3px double ${COLORS.ink}`,
+    width: "100%",
+  },
+  sectionLabel: {
+    fontFamily: mono,
+    fontSize: 11,
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: COLORS.faint,
+    margin: "18px 0 8px",
+  },
+  barList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+  barRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    width: "100%",
+    border: "none",
+    background: "transparent",
+    padding: "0 2px",
+    textAlign: "left",
+    fontFamily: sans,
+    cursor: "pointer",
+  },
+  barMain: { flex: 1, minWidth: 0 },
+  barTopLine: {
+    display: "flex",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  barLabel: {
+    fontFamily: sans,
+    fontSize: 13,
+    fontWeight: 600,
+    color: COLORS.ink,
+  },
+  barAmount: {
+    fontFamily: mono,
+    fontSize: 13,
+    fontWeight: 600,
+    color: COLORS.ink,
+  },
+  barTrack: {
+    height: 6,
+    borderRadius: 3,
+    background: "#D6EAF2",
+    overflow: "hidden",
+  },
+  barFill: {
+    height: "100%",
+    borderRadius: 3,
+  },
+  barPct: {
+    fontFamily: mono,
+    fontSize: 10,
+    color: COLORS.faint,
+    marginTop: 3,
+  },
+};
+
+const container = document.getElementById("root");
+const root = ReactDOM.createRoot(container);
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
